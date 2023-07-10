@@ -1,0 +1,5 @@
+aiohttp==3.8.4
+pygame==2.5.0
+pyserial==3.5
+types-pyserial==3.5.0.8
+mypy==1.4.1

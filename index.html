@@ -1,0 +1,159 @@
+<!doctype html>
+<html style="height: 100%">
+<body style="background-color: grey; height: 100%; margin: 0; padding: 0">
+
+<canvas id="canvas" style="height: 100%; margin: 0 auto; display: block;"></canvas>
+
+<script>
+
+let OFF_CANVAS = null
+let GAME_STATE = null
+let LAST_UPDATE = performance.now()
+let SX = 1
+let SY = 1
+
+function clamp_x(val) {
+    if(val < 0) {
+        return 0
+    } else if(val > GAME_STATE.res_x) {
+        return GAME_STATE.res_x;
+    }
+    return val
+}
+
+function clamp_y(val) {
+    if (val < 0) {
+        return 0
+    } else if (val > GAME_STATE.res_y) {
+        return GAME_STATE.res_y;
+    }
+    return val
+}
+
+function onBaseImageLoad(ev) {
+    const canvas = document.getElementById("canvas");
+
+    createImageBitmap(ev.target.response, {
+        resizeWidth: canvas.clientWidth,
+        resizeHeight: canvas.clientHeight,
+        resizeQuality: "high"
+    }).then((baseImg) => {
+        OFF_CANVAS = new OffscreenCanvas(canvas.clientWidth, canvas.clientHeight)
+        const ctx = OFF_CANVAS.getContext("2d");
+        ctx.drawImage(baseImg, 0, 0)
+
+        setInterval(loadState, 150);
+        updateCanvas()
+    })
+}
+
+function loadState() {
+    const req = new XMLHttpRequest();
+    req.addEventListener("load", (ev) => {
+        const data = JSON.parse(req.responseText)
+        if(GAME_STATE !== null) {
+            fixupLastState(data);
+        }
+        GAME_STATE = data;
+        LAST_UPDATE = performance.now()
+
+        const canvas = document.getElementById("canvas");
+        SX = canvas.clientWidth / data.res_x
+        SY = canvas.clientHeight / data.res_y
+    });
+    req.timeout = 150;
+    req.open("GET", "/pointers.json");
+    req.send();
+}
+
+function fixupLastState(new_state) {
+    const ctx_off = OFF_CANVAS.getContext("2d");
+
+    for(const np of new_state.pointers) {
+        const op = GAME_STATE.pointers.find(p => p.id === np.id)
+        if(!op) {
+            continue
+        }
+
+        ctx_off.lineWidth = op.th
+        ctx_off.strokeStyle = op.clr
+
+        ctx_off.beginPath();
+        ctx_off.moveTo(op.x * SX, op.y * SY)
+        ctx_off.lineTo(np.x * SX, np.y * SY)
+        ctx_off.stroke()
+    }
+}
+
+function updateCanvas() {
+    if(OFF_CANVAS === null || GAME_STATE === null) {
+        requestAnimationFrame(updateCanvas)
+        return
+    }
+
+    const ctx_off = OFF_CANVAS.getContext("2d");
+
+    const now = performance.now()
+    const diff_ms = now - LAST_UPDATE
+
+    ctx_off.lineCap = "square"
+
+    for (const p of GAME_STATE.pointers) {
+        const nx = clamp_x(p.x + p.dx * diff_ms)
+        const ny = clamp_y(p.y + p.dy * diff_ms)
+
+        ctx_off.lineWidth = p.th
+        ctx_off.strokeStyle = p.clr
+
+        ctx_off.beginPath();
+        ctx_off.moveTo(p.x * SX, p.y * SY)
+        ctx_off.lineTo(nx * SX, ny * SY)
+        ctx_off.stroke()
+
+        p.x = nx
+        p.y = ny
+    }
+
+    const canvas = document.getElementById("canvas");
+    const ctx_page = canvas.getContext("2d");
+    ctx_page.reset()
+    ctx_page.drawImage(OFF_CANVAS, 0, 0)
+    //ctx_page.putImageData(ctx_off.getImageData(0, 0, canvas.clientWidth, canvas.clientHeight), 0, 0)
+
+    for (const p of GAME_STATE.pointers) {
+        ctx_page.fillStyle = p.clr
+
+        ctx_page.beginPath();
+        ctx_page.ellipse(p.x * SX, p.y * SY, p.th * 2, p.th*2, 0, 0, 2 * Math.PI);
+        ctx_page.fill();
+    }
+
+    LAST_UPDATE = now
+    requestAnimationFrame(updateCanvas)
+}
+
+function init() {
+    const canvas = document.getElementById("canvas");
+    const rect = canvas.getBoundingClientRect();
+
+    canvas.style.width = rect.height*1.33 + "px";
+    canvas.width = rect.height * 1.33;
+    canvas.height = rect.height;
+
+    const ctx = canvas.getContext("2d");
+
+    loadState();
+
+    const req_base = new XMLHttpRequest();
+    req_base.responseType = "blob";
+    req_base.addEventListener("load", onBaseImageLoad);
+    req_base.open("GET", "/base.png");
+    req_base.send();
+
+    setTimeout(() => window.location.reload(), 900 * 1000)
+}
+
+init();
+</script>
+</body>
+</html>
