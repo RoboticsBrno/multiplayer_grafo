@@ -174,13 +174,19 @@ class Game:
     BASE_IMAGE_NAME = "base.png"
 
     def __init__(self) -> None:
+        self._update_lock = asyncio.Lock()
         self._pointers: Dict[str, Pointer] = {}
         self._surface = pygame.Surface((CANVAS_RES_X, CANVAS_RES_Y))
         self._surface.fill((255, 255, 255))
 
-        self._db = self._init_db()
+        self._init_db()
         self._last_save = time.time()
         self._load_state()
+
+        asyncio.create_task(self.autosave_task())
+
+    def close(self) -> None:
+        self._save_state()
 
     def surface_png(self) -> bytes:
         res_bytes = BytesIO()
@@ -227,29 +233,38 @@ class Game:
             pntr.last_update = time.time()
         return pntr
 
+    async def autosave_task(self) -> None:
+        while True:
+            # await asyncio.sleep(5 * 60)
+            await asyncio.sleep(5)
+            async with self._update_lock:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, self._save_state)
+
     async def run(self) -> None:
         last_tm = time.time()
         while True:
-            now = time.time()
-            diff_ms = int((now - last_tm) * 1000)
-            last_tm = now
+            async with self._update_lock:
+                now = time.time()
+                diff_ms = int((now - last_tm) * 1000)
+                last_tm = now
 
-            for p in self._pointers.values():
-                if now - p.last_update > UPDATE_TIMEOUT_SECS:
-                    continue
+                for p in self._pointers.values():
+                    if now - p.last_update > UPDATE_TIMEOUT_SECS:
+                        continue
 
-                new_x = self._clamp_x(p.x + p.delta_x * diff_ms)
-                new_y = self._clamp_y(p.y + p.delta_y * diff_ms)
+                    new_x = self._clamp_x(p.x + p.delta_x * diff_ms)
+                    new_y = self._clamp_y(p.y + p.delta_y * diff_ms)
 
-                pygame.draw.line(
-                    self._surface,
-                    p.color,
-                    (p.x, p.y),
-                    (new_x, new_y),
-                    round(p.thickness),
-                )
-                p.x = new_x
-                p.y = new_y
+                    pygame.draw.line(
+                        self._surface,
+                        p.color,
+                        (p.x, p.y),
+                        (new_x, new_y),
+                        round(p.thickness),
+                    )
+                    p.x = new_x
+                    p.y = new_y
 
             await asyncio.sleep(UPDATE_TICK_RATE_SECS)
 
@@ -264,70 +279,71 @@ class Game:
         base_img = self.surface_png()
 
         print("Saving game state")
-        cur = self._db.cursor()
-        cur.execute("BEGIN;")
-        try:
-            for p in changed_pointers:
-                print(json.dumps(p.asdict()))
+        with sqlite3.connect("state.sqlite3", isolation_level=None) as con:
+            cur = con.cursor()
+            cur.execute("BEGIN;")
+            try:
+                for p in changed_pointers:
+                    cur.execute(
+                        """INSERT INTO pointers (addr, last_update, data) VALUES (?, ?, ?)
+                        ON CONFLICT(addr) DO UPDATE SET last_update=excluded.last_update, data=excluded.data;""",
+                        (p.addr, p.last_update, json.dumps(p.asdict())),
+                    )
                 cur.execute(
-                    """INSERT INTO pointers (addr, last_update, data) VALUES (?, ?, ?)
-                    ON CONFLICT(addr) DO UPDATE SET last_update=excluded.last_update, data=excluded.data;""",
-                    (p.addr, p.last_update, json.dumps(p.asdict())),
+                    "INSERT INTO images (name, data_png) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET data_png=excluded.data_png",
+                    (self.BASE_IMAGE_NAME, base_img),
                 )
-            cur.execute(
-                "INSERT INTO images (name, data_png) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET data_png=excluded.data_png",
-                (self.BASE_IMAGE_NAME, base_img),
-            )
-            cur.execute("COMMIT;")
-            self._last_save = time.time()
-        except Exception:
-            cur.execute("ROLLBACK")
-            raise
-        finally:
-            cur.close()
+                cur.execute("COMMIT;")
+                self._last_save = time.time()
+            except Exception:
+                cur.execute("ROLLBACK")
+                raise
+            finally:
+                cur.close()
 
     def _load_state(self) -> None:
-        cur = self._db.cursor()
-        for row in cur.execute("SELECT data FROM pointers"):
-            try:
-                pntr = Pointer.fromdict(json.loads(row[0]))
-                self._pointers[pntr.addr] = pntr
-            except Exception:
-                LOGGER.exception("failed to deserialize pointer, skipping")
-                continue
+        with sqlite3.connect("state.sqlite3", isolation_level=None) as con:
+            cur = con.cursor()
+            for row in cur.execute("SELECT data FROM pointers"):
+                try:
+                    pntr = Pointer.fromdict(json.loads(row[0]))
+                    self._pointers[pntr.addr] = pntr
+                except Exception:
+                    LOGGER.exception("failed to deserialize pointer, skipping")
+                    continue
 
-        cur.execute(
-            "SELECT data_png FROM images WHERE name=?;", (self.BASE_IMAGE_NAME,)
-        )
-        base_img_data = cur.fetchone()
-        if base_img_data is not None:
-            base_img = BytesIO(base_img_data[0])
-            self._surface = pygame.transform.scale(
-                pygame.image.load(base_img, "base.png"), (CANVAS_RES_X, CANVAS_RES_Y)
+            cur.execute(
+                "SELECT data_png FROM images WHERE name=?;", (self.BASE_IMAGE_NAME,)
             )
+            base_img_data = cur.fetchone()
+            if base_img_data is not None:
+                base_img = BytesIO(base_img_data[0])
+                self._surface = pygame.transform.scale(
+                    pygame.image.load(base_img, "base.png"),
+                    (CANVAS_RES_X, CANVAS_RES_Y),
+                )
 
     @staticmethod
-    def _init_db() -> sqlite3.Connection:
-        con = sqlite3.connect("state.sqlite3", isolation_level=None)
-        con.execute("pragma journal_mode=wal")
-        con.executescript(
+    def _init_db() -> None:
+        with sqlite3.connect("state.sqlite3", isolation_level=None) as con:
+            con.execute("pragma journal_mode=wal")
+            con.executescript(
+                """
+            BEGIN;
+            CREATE TABLE IF NOT EXISTS pointers(
+                addr TEXT NOT NULL,
+                last_update REAL NOT NULL,
+                data TEXT NOT NULL,
+                PRIMARY KEY(addr)
+            );
+            CREATE TABLE IF NOT EXISTS images(
+                name TEXT NOT NULL,
+                data_png BLOB NOT NULL,
+                PRIMARY KEY(name)
+            );
+            COMMIT;
             """
-        BEGIN;
-        CREATE TABLE IF NOT EXISTS pointers(
-            addr TEXT NOT NULL,
-            last_update REAL NOT NULL,
-            data TEXT NOT NULL,
-            PRIMARY KEY(addr)
-        );
-        CREATE TABLE IF NOT EXISTS images(
-            name TEXT NOT NULL,
-            data_png BLOB NOT NULL,
-            PRIMARY KEY(name)
-        );
-        COMMIT;
-        """
-        )
-        return con
+            )
 
     @staticmethod
     def _generate_color(id: str) -> Tuple[int, int, int]:
@@ -357,6 +373,7 @@ class Game:
 class WebServer:
     def __init__(self, game: Game) -> None:
         self._game = game
+        self._runner: Optional[web.AppRunner] = None
 
     async def start(self, port: int) -> None:
         app = web.Application()
@@ -371,10 +388,15 @@ class WebServer:
 
         print("Starting web server at 0.0.0.0:%d" % port)
 
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", port)
+        self._runner = web.AppRunner(app)
+        await self._runner.setup()
+        site = web.TCPSite(self._runner, "0.0.0.0", port)
         await site.start()
+
+    async def close(self) -> None:
+        if self._runner is not None:
+            await self._runner.cleanup()
+            self._runner = None
 
     async def handle_index(self, _req: web.Request) -> web.StreamResponse:
         src_root = str(Path(__file__).absolute())
@@ -411,7 +433,8 @@ async def main() -> None:
         await game.run()
     finally:
         serial_handler.stop()
-        game._save_state()
+        game.close()
+        await server.close()
 
 
 if __name__ == "__main__":

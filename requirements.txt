@@ -3,3 +3,5 @@ pygame==2.5.0
 pyserial==3.5
 types-pyserial==3.5.0.8
 mypy==1.4.1
+black==23.3.0
+isort==5.12.0
