@@ -235,8 +235,7 @@ class Game:
 
     async def autosave_task(self) -> None:
         while True:
-            # await asyncio.sleep(5 * 60)
-            await asyncio.sleep(5)
+            await asyncio.sleep(5 * 60)
             async with self._update_lock:
                 loop = asyncio.get_running_loop()
                 await loop.run_in_executor(None, self._save_state)
