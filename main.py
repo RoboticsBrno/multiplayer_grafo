@@ -219,7 +219,8 @@ class Game:
 
     def on_reset_received(self, id: str) -> None:
         pntr = self._get_pntr(id)
-        pntr.x = pntr.y = 0
+        pntr.x = CANVAS_RES_X / 2
+        pntr.y = CANVAS_RES_Y / 2
         pntr.delta_x = pntr.delta_y = 0
         pntr.color = self._generate_color(id)
         pntr.thickness = 2
