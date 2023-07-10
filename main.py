@@ -107,6 +107,7 @@ class SerialHandler(threading.Thread):
     CMD_SPEED_RE = re.compile(r"s ([0-9.-]+) ([0-9.-]+)")
     CMD_COLOR_RE = re.compile(r"c #([0-9a-fA-F]{6})")
     CMD_THICKNESS_RE = re.compile(r"t ([0-9]+)")
+    CMD_RESET = re.compile(r"reset$")
 
     def __init__(
         self, port: str, game: "Game", loop: asyncio.AbstractEventLoop
@@ -168,6 +169,8 @@ class SerialHandler(threading.Thread):
                 self._loop.call_soon_threadsafe(
                     self._game.on_thickness_received, id, thickness
                 )
+        elif self.CMD_RESET.match(cmd) is not None:
+            self._loop.call_soon_threadsafe(self._game.on_reset_received, id)
 
 
 class Game:
@@ -213,6 +216,13 @@ class Game:
     def on_thickness_received(self, id: str, thickness: int) -> None:
         pntr = self._get_pntr(id)
         pntr.thickness = thickness
+
+    def on_reset_received(self, id: str) -> None:
+        pntr = self._get_pntr(id)
+        pntr.x = pntr.y = 0
+        pntr.delta_x = pntr.delta_y = 0
+        pntr.color = self._generate_color(id)
+        pntr.thickness = 2
 
     def _get_pntr(self, id: str) -> Pointer:
         pntr = self._pointers.get(id)

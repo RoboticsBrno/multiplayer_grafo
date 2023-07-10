@@ -48,6 +48,12 @@ async function main() {
     cooldown = sleep(100);
   });
 
+  gpio.on("rising", 16, async () => {
+    await cooldown;
+    radio.sendString("reset");
+    cooldown = sleep(100);
+  });
+
   gpio.on("rising", 42, async () => {
     CUR_COLOR++;
     if (CUR_COLOR >= COLORS.length) {
