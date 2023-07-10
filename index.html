@@ -6,6 +6,7 @@
 
 <script>
 
+let BASE_IMG = null
 let OFF_CANVAS = null
 let GAME_STATE = null
 let LAST_UPDATE = performance.now()
@@ -30,18 +31,22 @@ function clamp_y(val) {
     return val
 }
 
-function onBaseImageLoad(ev) {
+function resetOffCanvas() {
+    if(BASE_IMG === null) {
+        return
+    }
+
     const canvas = document.getElementById("canvas");
 
-    createImageBitmap(ev.target.response, {
-        resizeWidth: canvas.clientWidth,
-        resizeHeight: canvas.clientHeight,
-        resizeQuality: "high"
-    }).then((baseImg) => {
-        OFF_CANVAS = new OffscreenCanvas(canvas.clientWidth, canvas.clientHeight)
-        const ctx = OFF_CANVAS.getContext("2d");
-        ctx.drawImage(baseImg, 0, 0)
+    OFF_CANVAS = new OffscreenCanvas(canvas.clientWidth, canvas.clientHeight)
+    const ctx = OFF_CANVAS.getContext("2d");
+    ctx.drawImage(BASE_IMG, 0, 0, canvas.clientWidth, canvas.clientHeight)
+}
 
+function onBaseImageLoad(ev) {
+    createImageBitmap(ev.target.response).then((baseImg) => {
+        BASE_IMG = baseImg
+        resetOffCanvas()
         setInterval(loadState, 150);
         updateCanvas()
     })
@@ -132,15 +137,32 @@ function updateCanvas() {
     requestAnimationFrame(updateCanvas)
 }
 
-function init() {
+function onResize() {
     const canvas = document.getElementById("canvas");
     const rect = canvas.getBoundingClientRect();
 
-    canvas.style.width = rect.height*1.33 + "px";
-    canvas.width = rect.height * 1.33;
-    canvas.height = rect.height;
+    if(window.innerWidth > window.innerHeight) {
+        canvas.style.width = rect.height * 1.33 + "px";
+        canvas.style.height = "100%";
+        canvas.width = rect.height * 1.33;
+        canvas.height = rect.height;
+    } else {
+        canvas.style.width = "100%"
+        setTimeout(() => {
+            const rect = canvas.getBoundingClientRect();
+            canvas.style.height = rect.width * 0.66 + "px"
+            canvas.width = rect.width;
+            canvas.height = rect.width * 0.66;
+        })
 
-    const ctx = canvas.getContext("2d");
+    }
+
+    setTimeout(resetOffCanvas, 10)
+}
+
+function init() {
+    onResize();
+    addEventListener("resize", onResize)
 
     loadState();
 
