@@ -71,7 +71,7 @@ function fixupLastState(new_state) {
             continue;
         }
 
-        ctx_off.lineWidth = op.th
+        ctx_off.lineWidth = op.th * SX
         ctx_off.strokeStyle = op.clr
 
         ctx_off.beginPath();
@@ -98,7 +98,7 @@ function updateCanvas() {
         const nx = clamp_x(p.x + p.dx * diff_ms)
         const ny = clamp_y(p.y + p.dy * diff_ms)
 
-        ctx_off.lineWidth = p.th
+        ctx_off.lineWidth = p.th * SX
         ctx_off.strokeStyle = p.clr
 
         ctx_off.beginPath();
@@ -120,7 +120,7 @@ function updateCanvas() {
         ctx_page.fillStyle = p.clr
 
         ctx_page.beginPath();
-        ctx_page.ellipse(p.x * SX, p.y * SY, p.th * 2, p.th*2, 0, 0, 2 * Math.PI);
+        ctx_page.ellipse(p.x * SX, p.y * SY, p.th * 2 * SX, p.th*2*SX, 0, 0, 2 * Math.PI);
         ctx_page.fill();
     }
 
