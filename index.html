@@ -80,6 +80,11 @@ function fixupLastState(new_state) {
             continue
         }
 
+        const dist = Math.sqrt(Math.pow(np.x - op.x, 2) + Math.pow(np.y - op.y, 2))
+        if(Math.abs(dist) > 80) {
+            continue;
+        }
+
         ctx_off.lineWidth = op.th
         ctx_off.strokeStyle = op.clr
 

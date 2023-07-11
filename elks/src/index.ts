@@ -65,9 +65,21 @@ async function main() {
     cooldown = sleep(100);
   });
 
-  while (true) {
+  /*while (true) {
     const x = convert_adc(adc.read(PIN_X));
     const y = convert_adc(adc.read(PIN_Y)) * -1;
+
+    await cooldown;
+    radio.sendString(`s ${x} ${y}`);
+    await sleep(50);
+  }*/
+
+  while (true) {
+    const heading = (1 - adc.read(PIN_X) / 1023) * 2 * Math.PI;
+    const speed = 1 - adc.read(PIN_Y) / 1023;
+
+    const x = Math.sin(heading) * speed * 100;
+    const y = Math.cos(heading) * speed * 100;
 
     await cooldown;
     radio.sendString(`s ${x} ${y}`);
