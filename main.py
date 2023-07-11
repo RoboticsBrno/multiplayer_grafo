@@ -1,7 +1,6 @@
 import argparse
 import asyncio
 import dataclasses
-import json
 import logging
 import os
 import random
@@ -13,10 +12,11 @@ import time
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, TypedDict
+from typing import Any, Dict, List, Optional, Set, Tuple, TypedDict
 
 import pygame
 import serial
+import ujson
 from aiohttp import web
 
 LOGGER = logging.getLogger(__name__)
@@ -250,32 +250,24 @@ class Game:
                 loop = asyncio.get_running_loop()
                 await loop.run_in_executor(None, self._save_state)
 
-    async def run(self) -> None:
-        last_tm = time.time()
-        while True:
-            async with self._update_lock:
-                now = time.time()
-                diff_ms = int((now - last_tm) * 1000)
-                last_tm = now
+    async def update(self, now: float, diff_ms: int) -> None:
+        async with self._update_lock:
+            for p in self._pointers.values():
+                if now - p.last_update > UPDATE_TIMEOUT_SECS:
+                    continue
 
-                for p in self._pointers.values():
-                    if now - p.last_update > UPDATE_TIMEOUT_SECS:
-                        continue
+                new_x = self._clamp_x(p.x + p.delta_x * diff_ms)
+                new_y = self._clamp_y(p.y + p.delta_y * diff_ms)
 
-                    new_x = self._clamp_x(p.x + p.delta_x * diff_ms)
-                    new_y = self._clamp_y(p.y + p.delta_y * diff_ms)
-
-                    pygame.draw.line(
-                        self._surface,
-                        p.color,
-                        (p.x, p.y),
-                        (new_x, new_y),
-                        round(p.thickness),
-                    )
-                    p.x = new_x
-                    p.y = new_y
-
-            await asyncio.sleep(UPDATE_TICK_RATE_SECS)
+                pygame.draw.line(
+                    self._surface,
+                    p.color,
+                    (p.x, p.y),
+                    (new_x, new_y),
+                    round(p.thickness),
+                )
+                p.x = new_x
+                p.y = new_y
 
     def _save_state(self) -> None:
         changed_pointers = [
@@ -296,7 +288,7 @@ class Game:
                     cur.execute(
                         """INSERT INTO pointers (addr, last_update, data) VALUES (?, ?, ?)
                         ON CONFLICT(addr) DO UPDATE SET last_update=excluded.last_update, data=excluded.data;""",
-                        (p.addr, p.last_update, json.dumps(p.asdict())),
+                        (p.addr, p.last_update, ujson.dumps(p.asdict())),
                     )
                 cur.execute(
                     "INSERT INTO images (name, data_png) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET data_png=excluded.data_png",
@@ -315,7 +307,7 @@ class Game:
             cur = con.cursor()
             for row in cur.execute("SELECT data FROM pointers"):
                 try:
-                    pntr = Pointer.fromdict(json.loads(row[0]))
+                    pntr = Pointer.fromdict(ujson.loads(row[0]))
                     self._pointers[pntr.addr] = pntr
                 except Exception:
                     LOGGER.exception("failed to deserialize pointer, skipping")
@@ -383,6 +375,9 @@ class WebServer:
     def __init__(self, game: Game) -> None:
         self._game = game
         self._runner: Optional[web.AppRunner] = None
+        self._sockets: Set[web.WebSocketResponse] = set()
+        self._has_new_socket = False
+        self._last_ws_json = ""
 
     async def start(self, port: int) -> None:
         app = web.Application()
@@ -390,8 +385,10 @@ class WebServer:
         app.add_routes(
             [
                 web.get("/", self.handle_index),
+                web.get("/robust-websocket.js", self.handle_robust_websocket),
                 web.get("/base.png", self.handle_base_png),
                 web.get("/pointers.json", self.handle_pointers_json),
+                web.get("/ws", self.handle_data_ws),
             ]
         )
 
@@ -402,6 +399,23 @@ class WebServer:
         site = web.TCPSite(self._runner, "0.0.0.0", port)
         await site.start()
 
+    async def update(self) -> None:
+        if not self._sockets:
+            return
+
+        state: CanvasState = {
+            "res_x": CANVAS_RES_X,
+            "res_y": CANVAS_RES_Y,
+            "pointers": self._game.active_pointers(),
+        }
+        state_json = ujson.dumps(state)
+
+        if self._has_new_socket or self._last_ws_json != state_json:
+            self._has_new_socket = False
+            self._last_ws_json = state_json
+            for ws in self._sockets:
+                asyncio.create_task(ws.send_str(state_json))
+
     async def close(self) -> None:
         if self._runner is not None:
             await self._runner.cleanup()
@@ -410,6 +424,12 @@ class WebServer:
     async def handle_index(self, _req: web.Request) -> web.StreamResponse:
         src_root = str(Path(__file__).absolute())
         return web.FileResponse(os.path.join(os.path.dirname(src_root), "index.html"))
+
+    async def handle_robust_websocket(self, _req: web.Request) -> web.StreamResponse:
+        src_root = str(Path(__file__).absolute())
+        return web.FileResponse(
+            os.path.join(os.path.dirname(src_root), "robust-websocket.js")
+        )
 
     async def handle_base_png(self, _req: web.Request) -> web.Response:
         return web.Response(body=self._game.surface_png(), content_type="image/png")
@@ -421,6 +441,20 @@ class WebServer:
             "pointers": self._game.active_pointers(),
         }
         return web.json_response(res)
+
+    async def handle_data_ws(self, req: web.Request) -> web.StreamResponse:
+        ws = web.WebSocketResponse()
+        await ws.prepare(req)
+
+        self._sockets.add(ws)
+        self._has_new_socket = True
+        try:
+            async for _ in ws:
+                pass
+        finally:
+            self._sockets.remove(ws)
+
+        return ws
 
 
 async def main() -> None:
@@ -439,7 +473,16 @@ async def main() -> None:
     await server.start(args.web_port)
 
     try:
-        await game.run()
+        last_tm = time.time()
+        while True:
+            now = time.time()
+            diff_ms = int((now - last_tm) * 1000)
+            last_tm = now
+
+            await game.update(now, diff_ms)
+            await server.update()
+
+            await asyncio.sleep(UPDATE_TICK_RATE_SECS)
     finally:
         serial_handler.stop()
         game.close()

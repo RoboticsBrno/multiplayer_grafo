@@ -4,8 +4,10 @@
 
 <canvas id="canvas" style="height: 100%; margin: 0 auto; display: block;"></canvas>
 
+<script src="/robust-websocket.js"></script>
 <script>
 
+let WS = null;
 let BASE_IMG = null
 let OFF_CANVAS = null
 let GAME_STATE = null
@@ -47,31 +49,15 @@ function onBaseImageLoad(ev) {
     createImageBitmap(ev.target.response).then((baseImg) => {
         BASE_IMG = baseImg
         resetOffCanvas()
-        setInterval(loadState, 150);
         updateCanvas()
     })
 }
 
-function loadState() {
-    const req = new XMLHttpRequest();
-    req.addEventListener("load", (ev) => {
-        const data = JSON.parse(req.responseText)
-        if(GAME_STATE !== null) {
-            fixupLastState(data);
-        }
-        GAME_STATE = data;
-        LAST_UPDATE = performance.now()
-
-        const canvas = document.getElementById("canvas");
-        SX = canvas.clientWidth / data.res_x
-        SY = canvas.clientHeight / data.res_y
-    });
-    req.timeout = 150;
-    req.open("GET", "/pointers.json");
-    req.send();
-}
-
 function fixupLastState(new_state) {
+    if(OFF_CANVAS === null) {
+        return
+    }
+
     const ctx_off = OFF_CANVAS.getContext("2d");
 
     for(const np of new_state.pointers) {
@@ -169,7 +155,19 @@ function init() {
     onResize();
     addEventListener("resize", onResize)
 
-    loadState();
+    WS = new RobustWebSocket(`ws://${window.location.host}/ws`);
+    WS.addEventListener("message", (event) => {
+        const data = JSON.parse(event.data)
+        if (GAME_STATE !== null) {
+            fixupLastState(data);
+        }
+        GAME_STATE = data;
+        LAST_UPDATE = performance.now()
+
+        const canvas = document.getElementById("canvas");
+        SX = canvas.clientWidth / data.res_x
+        SY = canvas.clientHeight / data.res_y
+    })
 
     const req_base = new XMLHttpRequest();
     req_base.responseType = "blob";
